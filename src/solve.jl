@@ -316,8 +316,51 @@ function batch_solve_up(ensembleprob, probs, alg, ensemblealg, I, u0, p; kwargs.
         colorvec = nothing
     end
 
+    #=
+    The problem with implementing non-diagonal noise in ArrayEnsembles is that the solve functions expects to be able to matrix multiply the matrix noise term by a vector of Wiener increments and add that to the solution, but in ArrayEnsembles the solution is a matrix and not a vector. Here is a link to an arbitrarily choosen SDE algorithm: https://github.com/SciML/StochasticDiffEq.jl/blob/0c03d8b6378f133a1f819ebc2be8f0bee5d69f06/src/perform_step/sra.jl#L144
+
+    Here is the text of that example:
+    integrator.g(g1,uprev,p,t+c11*dt)
+    integrator.f(k1,uprev,p,t)
+
+    if is_diagonal_noise(integrator.sol.prob)
+        @.. H01 = uprev + dt*a21*k1 + chi2*b21*g1
+    else
+        mul!(E₁,g1,chi2)
+        @.. H01 = uprev + dt*a21*k1 + b21*E₁
+    end
+
+    integrator.g is the noise function. It's output is stored in g1 which is then matrix multiplied by chi2 which is the vector of Wiener increaments. This means the expression b21*E is a vector. This of course makes sense for single copies of the problem.
+
+    The problem is that H01 and k1 which would both be vectors for an individual problem are nxm matrices in the ArrayEnsembles where n is the dimension of the underlying problem and m is the number of trajectories.
+
+    There is then a second larger problem which that StochasticDiffEq.jl assumes that noise_rate_prototype is a matrix and sets dimension of g1 the matrix handed to integrator.g according to the dimensions of noise_rate_prototype. If noise_rate_prototype is a 3 tensor instead of matrix, then the solve function in StochasticDiffEq.jl will throw an error when trying to find the dimension for the Wiener process: https://github.com/SciML/StochasticDiffEq.jl/blob/0c03d8b6378f133a1f819ebc2be8f0bee5d69f06/src/solve.jl#L302 As text:
+
+        rand_prototype = false .* noise_rate_prototype[1,:]
+
+        BoundsError: attempt to access 4×2×10 Array{Float32, 3} at index [1, 1:2]
+
+    As far as I can see, the solution would be to refactor StochasticDiffEq.jl to allow non-matrix "noise_rate_prototype"s, and then add a definition of mul! for 3 tensor to the KernelAbstractions.jl library. 
+    =#
+    if SciMLBase.is_diagonal_noise(probs[1])
+        noise_rate_prototype = nothing
+    else
+        if ensemblealg isa EnsembleGPUArray
+            backend = ensemblealg.backend
+            noise_rate_prototype = allocate(
+                backend, Float32,
+                (len, size(probs[1].noise_rate_prototype, 2), length(I)))
+            fill!(noise_rate_prototype, 0.0)
+        else
+            noise_rate_prototype = zeros(
+                Float32, len, size(probs[1].noise_rate_prototype, 2),
+                length(I))
+        end
+    end
+
     _callback = generate_callback(probs[1], length(I), ensemblealg; kwargs...)
-    prob = generate_problem(probs[1], u0, p, jac_prototype, colorvec)
+    prob = generate_problem(probs[1], u0, p, jac_prototype, colorvec,
+        noise_rate_prototype = noise_rate_prototype)
 
     if hasproperty(alg, :linsolve)
         _alg = remake(alg, linsolve = LinSolveGPUSplitFactorize(len, -1))

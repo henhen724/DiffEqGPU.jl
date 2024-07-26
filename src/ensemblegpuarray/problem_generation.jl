@@ -67,7 +67,8 @@ function generate_problem(prob::SciMLBase.AbstractODEProblem,
         prob.kwargs...)
 end
 
-function generate_problem(prob::SDEProblem, u0, p, jac_prototype, colorvec)
+function generate_problem(
+        prob::SDEProblem, u0, p, jac_prototype, colorvec; noise_rate_prototype = nothing)
     _f = let f = prob.f.f, kernel = DiffEqBase.isinplace(prob) ? gpu_kernel : gpu_kernel_oop
         function (du, u, p, t)
             version = get_backend(u)
@@ -78,7 +79,13 @@ function generate_problem(prob::SDEProblem, u0, p, jac_prototype, colorvec)
         end
     end
 
-    _g = let f = prob.f.g, kernel = DiffEqBase.isinplace(prob) ? gpu_kernel : gpu_kernel_oop
+    is_diagonal_noise = SciMLBase.is_diagonal_noise(prob)
+
+    _g = let f = prob.f.g,
+        kernel = DiffEqBase.isinplace(prob) ?
+                 (is_diagonal_noise ? gpu_kernel : gpu_kernel_non_diag) :
+                 (is_diagonal_noise ? gpu_kernel_oop : gpu_kernel_non_diag_oop)
+
         function (du, u, p, t)
             version = get_backend(u)
             wgs = workgroupsize(version, size(u, 2))
@@ -139,6 +146,17 @@ function generate_problem(prob::SDEProblem, u0, p, jac_prototype, colorvec)
         #colorvec=colorvec,
         jac_prototype = jac_prototype,
         tgrad = _tgrad)
-    prob = SDEProblem(f_func, _g, u0, prob.tspan, p;
-        prob.kwargs...)
+    if is_diagonal_noise
+        prob = SDEProblem(
+            f_func, _g, u0, prob.tspan, p;
+            prob.kwargs...)
+    else
+        prob = SDEProblem(
+            f_func, _g,
+            u0,
+            prob.tspan,
+            p;
+            noise_rate_prototype = noise_rate_prototype,
+            prob.kwargs...)
+    end
 end

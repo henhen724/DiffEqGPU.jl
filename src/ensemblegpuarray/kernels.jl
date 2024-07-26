@@ -58,6 +58,29 @@ end
     end
 end
 
+@kernel function gpu_kernel_non_diag(f, du, @Const(u), @Const(p), @Const(t))
+    i = @index(Global, Linear)
+    if eltype(p) <: Number
+        @views @inbounds f(
+            du[:, i, :], u[:, i], p[:, i], t)
+    else
+        @views @inbounds f(
+            du[:, i, :], u[:, i], p[i], t)
+    end
+end
+
+@kernel function gpu_kernel_non_diag_oop(f, du, @Const(u), @Const(p), @Const(t))
+    i = @index(Global, Linear)
+    if eltype(p) <: Number
+        @views @inbounds x = f(u[:, i], p[:, i], t)
+    else
+        @views @inbounds x = f(u[:, i], p[i], t)
+    end
+    @inbounds for j1 in section1, j2 in section2
+        du[j1, i, j2] = x[j1, j2]
+    end
+end
+
 @kernel function jac_kernel(f, J, @Const(u),
         @Const(params::AbstractArray{ParamWrapper{P, T}}),
         @Const(t)) where {P, T}
